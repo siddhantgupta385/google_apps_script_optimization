@@ -1,0 +1,1379 @@
+
+
+
+
+// ============================== ON OPEN MENU ==============================
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Betting Actions')
+    .addItem('Refresh MLS Odds', 'fetchDraftKingsMLSodds')
+    .addItem('Refresh MLB Odds','fetchDraftKingsMLBOdds')
+    .addItem('Refresh NHL Odds', 'fetchDraftKingsNHLOdds')
+    .addItem('Refresh F1 Odds', 'fetchF1OddsFromWebScraper')
+    .addItem('Refresh Horse Racing Odds', 'fetchHorseRacingOdds')
+    .addItem('Refresh NBA Odds', 'fetchDraftKingsNBAOdds')
+    .addItem('Refresh UFC Odds', 'fetchDraftKingsUFCOdds')
+    .addItem('Fetch Scores (Last 2 Days)', 'fetchScores')
+    .addItem('Settle Bets V4', 'settlePendingBetsV4')
+    .addItem('Open Bet Slip V4', 'showBetSlipV4')
+    .addItem('Update Leaderboard', 'updateLeaderboard')
+    .addToUi();
+}
+
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('betSlipV4'); // match exact file name!
+}
+
+function importUSAHorseOdds() {
+  const raceSheet = getOrCreateSheet('usa_race_ids', ['id_race', 'course', 'date', 'distance', 'age', 'status']);
+  const oddsSheet = getOrCreateSheet('odds feed', ['Game Description', 'League', 'Type', 'Team', 'Odds', 'Source', 'Timestamp']);
+  const debugSheet = getOrCreateSheet('usa_debug', [
+    'Race ID', 'Horse', 'SP', 'Number', 'Trainer', 'Form', 'Odds Object'
+  ]);
+  const apiKey = 'bcb793a4a1mshb23b6362ecb7290p12bfbfjsn1efc8d22367e';
+
+  const data = raceSheet.getDataRange().getValues();
+  const header = data[0];
+  const rows = data.slice(1);
+
+  let reqCount = 0;
+
+  rows.forEach((row, i) => {
+    const id_race = row[0];
+    const status = row[5];
+    if (status !== 'NEW') return;
+
+    const url = `https://horse-racing-usa.p.rapidapi.com/race/${id_race}`;
+    const options = {
+      method: 'GET',
+      headers: {
+        'x-rapidapi-host': 'horse-racing-usa.p.rapidapi.com',
+        'x-rapidapi-key': apiKey
+      },
+      muteHttpExceptions: true
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const data = JSON.parse(response.getContentText());
+      const horses = data.horses || [];
+
+      let imported = 0;
+
+      horses.forEach(horse => {
+        debugSheet.appendRow([
+          id_race,
+          horse.horse,
+          horse.sp || '',
+          horse.number || '',
+          horse.trainer || '',
+          horse.form || '',
+          JSON.stringify(horse.odds || {})
+        ]);
+
+        if (horse.non_runner === "0" && horse.sp) {
+          oddsSheet.appendRow([
+            `${data.course} - ${data.age} - ${data.distance}`,
+            "USA HR",
+            "WIN",
+            horse.horse,
+            horse.sp,
+            "USA-HR",
+            new Date()
+          ]);
+          imported++;
+        }
+      });
+
+      const statusCol = 6; // "status" is column F
+      if (imported > 0) {
+        raceSheet.getRange(i + 2, statusCol).setValue("IMPORTED");
+      } else {
+        raceSheet.getRange(i + 2, statusCol).setValue("NO_ODDS");
+      }
+
+    } catch (e) {
+      Logger.log(`❌ Failed to import race ${id_race}: ${e}`);
+      raceSheet.getRange(i + 2, 6).setValue("FAILED");
+    }
+
+    // throttle to avoid 10 req/min
+    Utilities.sleep(1200);
+    reqCount++;
+  });
+
+  Logger.log("✅ Odds import complete.");
+}
+
+
+function getOrCreateSheet(name, headers = null) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+  }
+  if (headers && sheet.getLastRow() === 0) {
+    sheet.appendRow(headers);
+  }
+  return sheet;
+}
+
+function fetchUSARacecards() {
+  const sheetName = 'usa_race_ids';
+  const apiKey = 'bcb793a4a1mshb23b6362ecb7290p12bfbfjsn1efc8d22367e';
+  const today = new Date();
+  const yyyyMMdd = Utilities.formatDate(today, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  const url = `https://horse-racing-usa.p.rapidapi.com/racecards?date=${yyyyMMdd}`;
+
+  const options = {
+    method: 'GET',
+    headers: {
+      'x-rapidapi-host': 'horse-racing-usa.p.rapidapi.com',
+      'x-rapidapi-key': apiKey,
+    },
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(url, options);
+  const text = response.getContentText();
+let races;
+try {
+  races = JSON.parse(text);
+  if (!Array.isArray(races)) {
+    Logger.log('❌ Unexpected API response (not an array):');
+    Logger.log(text);
+    return;
+  }
+} catch (e) {
+  Logger.log('❌ JSON parse failed:');
+  Logger.log(text);
+  return;
+}
+
+
+  const sheet = getOrCreateSheet(sheetName, ['id_race', 'course', 'date', 'distance', 'age', 'status']);
+  const lastRow = sheet.getLastRow();
+
+  let existingIds = [];
+  if (lastRow > 1) {
+    existingIds = sheet.getRange(2, 1, lastRow - 1, 1).getValues().flat();
+  }
+
+  races.forEach(r => {
+    if (r.canceled === "0" && r.finished === "0" && !existingIds.includes(r.id_race)) {
+      sheet.appendRow([
+        r.id_race,
+        r.course,
+        r.date.replace(' (UTC-5)', ''),
+        r.distance,
+        r.age,
+        'NEW'
+      ]);
+    }
+  });
+
+  Logger.log(`✅ Imported ${races.length} USA racecards`);
+}
+
+
+
+
+// ============================== BET SLIP UI ==============================
+function showBetSlipV4() {
+  const html = HtmlService.createHtmlOutputFromFile('betSlipV4')
+    .setTitle('Bet Slip V4');
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+
+function getStructuredOdds() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed');
+  const data = sheet.getDataRange().getValues();
+  const header = data[0];
+
+  const sportIdx = header.indexOf('Sport');
+  const gameIdIdx = header.indexOf('Game ID');
+  const homeTeamIdx = header.indexOf('Home Team');
+  const awayTeamIdx = header.indexOf('Away Team');
+  const betTypeIdx = header.indexOf('Bet Type');
+  const sideIdx = header.indexOf('Side');
+  const lineIdx = header.indexOf('Line');
+  const oddsIdx = header.indexOf('Odds');
+  const dateIdx = header.indexOf('Date');
+
+  return data.slice(1).map(r => {
+    let rawDate = r[dateIdx];
+    let dateTime = 'Unknown';
+
+    if (rawDate) {
+      try {
+        const dateObj = new Date(rawDate);
+        const date = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "MM/dd");
+        const time = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "h:mma");
+        dateTime = `${date}, ${time}`;
+      } catch (e) {
+        Logger.log("Invalid date for row: " + JSON.stringify(r));
+      }
+    }
+
+    return {
+      sport: r[sportIdx],
+      gameId: r[gameIdIdx],
+      home_team: r[homeTeamIdx],
+      away_team: r[awayTeamIdx],
+      betType: r[betTypeIdx],
+      side: r[sideIdx],
+      line: r[lineIdx],
+      odds: r[oddsIdx],
+      dateTime
+    };
+  });
+}
+
+
+// ============================== BALANCE HELPER ==============================
+function getUserBalanceV4() {
+  const user = Session.getActiveUser().getEmail();
+  const balancesSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('balances');
+  const data = balancesSheet.getDataRange().getValues();
+  const row = data.find(r => r[0] === user);
+  if (!row) throw new Error(`User ${user} not found in balances sheet.`);
+  return parseFloat(row[1]);
+}
+
+// ============================== ODDS FETCHING ==============================
+
+function fetchDraftKingsMLSodds() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed')
+              || SpreadsheetApp.getActiveSpreadsheet().insertSheet('odds feed');
+
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  const sportKey = 'soccer_usa_mls';
+  const sportLabel = 'MLS';
+
+  if (sheet.getLastRow() === 0) {
+    const headers = ['Selected', 'Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Bet Type', 'Side', 'Line', 'Odds', 'Last Updated'];
+    sheet.appendRow(headers);
+  }
+
+  // Remove previous MLS rows
+  const data = sheet.getDataRange().getValues();
+  const sportIdx = data[0].indexOf('Sport');
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][sportIdx] === sportLabel) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  // Fetch ONLY H2H market
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?regions=us&markets=h2h&bookmakers=draftkings&apiKey=${apiKey}&oddsFormat=decimal`;
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    Logger.log(`API Error MLS: ${response.getContentText()}`);
+    SpreadsheetApp.getUi().alert(`Error fetching MLS odds: ${code}`);
+    return;
+  }
+
+  const dataObj = JSON.parse(response.getContentText());
+
+  dataObj.forEach(event => {
+    const gameId = event.id;
+    const date = new Date(event.commence_time).toLocaleString();
+    const homeTeam = event.home_team;
+    const awayTeam = event.away_team;
+
+    const bookmaker = event.bookmakers.find(bm => bm.key === 'draftkings');
+    if (!bookmaker) return;
+
+    const lastUpdated = new Date(bookmaker.last_update).toLocaleString();
+
+    const h2hMarket = bookmaker.markets.find(m => m.key === 'h2h');
+    if (!h2hMarket) return;
+
+    h2hMarket.outcomes.forEach(outcome => {
+      const row = [
+        false,
+        gameId,
+        sportLabel,
+        date,
+        homeTeam,
+        awayTeam,
+        'H2H',
+        outcome.name,     // Home / Away / Draw
+        '',
+        outcome.price,
+        lastUpdated
+      ];
+      sheet.appendRow(row);
+    });
+  });
+
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(`A2:A${lastRow}`).insertCheckboxes();
+}
+
+
+
+function fetchDraftKingsUFCOdds() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed')
+              || SpreadsheetApp.getActiveSpreadsheet().insertSheet('odds feed');
+
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  const sportKey = 'mma_mixed_martial_arts';
+  const sportLabel = 'UFC';
+
+  if (sheet.getLastRow() === 0) {
+    const headers = ['Selected', 'Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Bet Type', 'Side', 'Line', 'Odds', 'Last Updated'];
+    sheet.appendRow(headers);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const sportIdx = data[0].indexOf('Sport');
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][sportIdx] === sportLabel) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?regions=us&markets=h2h&bookmakers=draftkings&apiKey=${apiKey}&oddsFormat=decimal`;
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    Logger.log(`API Error UFC: ${response.getContentText()}`);
+    SpreadsheetApp.getUi().alert(`Error fetching UFC odds: ${code}`);
+    return;
+  }
+
+  const dataObj = JSON.parse(response.getContentText());
+  const now = new Date();
+  const cutoff = new Date(now.getTime() + 6 * 24 * 60 * 60 * 1000); // 6 days from now
+
+  dataObj.forEach(event => {
+    const eventDate = new Date(event.commence_time);
+    if (eventDate > cutoff) return;  // Skip events beyond 6 days
+
+    const gameId = event.id;
+    const date = eventDate.toLocaleString();
+    const homeTeam = event.home_team;
+    const awayTeam = event.away_team;
+
+    const bookmaker = event.bookmakers.find(bm => bm.key === 'draftkings');
+    if (!bookmaker) return;
+
+    const lastUpdated = new Date(bookmaker.last_update).toLocaleString();
+
+    bookmaker.markets.forEach(market => {
+      if (market.key !== 'h2h') return;  // Skip non-h2h markets
+
+      const betType = market.key.toUpperCase();
+
+      market.outcomes.forEach(outcome => {
+        const row = [
+          false,
+          gameId,
+          sportLabel,
+          date,
+          homeTeam,
+          awayTeam,
+          betType,
+          outcome.name,
+          '',  // Line (empty for h2h)
+          outcome.price,
+          lastUpdated
+        ];
+        sheet.appendRow(row);
+      });
+    });
+  });
+
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(`A2:A${lastRow}`).insertCheckboxes();
+}
+
+
+function fetchDraftKingsMLBOdds() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed')
+              || SpreadsheetApp.getActiveSpreadsheet().insertSheet('odds feed');
+
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  const sportKey = 'baseball_mlb';
+  const sportLabel = 'MLB';
+
+  if (sheet.getLastRow() === 0) {
+    const headers = ['Selected', 'Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Bet Type', 'Side', 'Line', 'Odds', 'Last Updated'];
+    sheet.appendRow(headers);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const sportIdx = data[0].indexOf('Sport');
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][sportIdx] === sportLabel) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?regions=us&markets=h2h,spreads&bookmakers=draftkings&apiKey=${apiKey}&oddsFormat=decimal`;
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    Logger.log(`API Error MLB: ${response.getContentText()}`);
+    SpreadsheetApp.getUi().alert(`Error fetching MLB odds: ${code}`);
+    return;
+  }
+
+  const dataObj = JSON.parse(response.getContentText());
+
+  dataObj.forEach(event => {
+    const gameId = event.id;
+    const date = new Date(event.commence_time).toLocaleString();
+    const homeTeam = event.home_team;
+    const awayTeam = event.away_team;
+
+    const bookmaker = event.bookmakers.find(bm => bm.key === 'draftkings');
+    if (!bookmaker) return;
+
+    const lastUpdated = new Date(bookmaker.last_update).toLocaleString();
+
+    bookmaker.markets.forEach(market => {
+      const betType = market.key.toUpperCase();
+
+      market.outcomes.forEach(outcome => {
+        const row = [
+          false,
+          gameId,
+          sportLabel,
+          date,
+          homeTeam,
+          awayTeam,
+          betType,
+          outcome.name,
+          outcome.point ?? '',
+          outcome.price,
+          lastUpdated
+        ];
+        sheet.appendRow(row);
+      });
+    });
+  });
+
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(`A2:A${lastRow}`).insertCheckboxes();
+}
+
+function fetchDraftKingsNHLOdds() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed')
+              || SpreadsheetApp.getActiveSpreadsheet().insertSheet('odds feed');
+
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  const sportKey = 'icehockey_nhl';
+  const sportLabel = 'NHL';
+
+  if (sheet.getLastRow() === 0) {
+    const headers = ['Selected', 'Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Bet Type', 'Side', 'Line', 'Odds', 'Last Updated'];
+    sheet.appendRow(headers);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const sportIdx = data[0].indexOf('Sport');
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][sportIdx] === sportLabel) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?regions=us&markets=h2h,spreads&bookmakers=draftkings&apiKey=${apiKey}&oddsFormat=decimal`;
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    Logger.log(`API Error NHL: ${response.getContentText()}`);
+    SpreadsheetApp.getUi().alert(`Error fetching NHL odds: ${code}`);
+    return;
+  }
+
+  const dataObj = JSON.parse(response.getContentText());
+
+  dataObj.forEach(event => {
+    const gameId = event.id;
+    const date = new Date(event.commence_time).toLocaleString();
+    const homeTeam = event.home_team;
+    const awayTeam = event.away_team;
+
+    const bookmaker = event.bookmakers.find(bm => bm.key === 'draftkings');
+    if (!bookmaker) return;
+
+    const lastUpdated = new Date(bookmaker.last_update).toLocaleString();
+
+    bookmaker.markets.forEach(market => {
+      const betType = market.key.toUpperCase();
+
+      market.outcomes.forEach(outcome => {
+        const row = [
+          false,
+          gameId,
+          sportLabel,
+          date,
+          homeTeam,
+          awayTeam,
+          betType,
+          outcome.name,
+          outcome.point ?? '',
+          outcome.price,
+          lastUpdated
+        ];
+        sheet.appendRow(row);
+      });
+    });
+  });
+
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(`A2:A${lastRow}`).insertCheckboxes();
+}
+
+function fetchDraftKingsNBAOdds() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed')
+              || SpreadsheetApp.getActiveSpreadsheet().insertSheet('odds feed');
+
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  const sportKey = 'basketball_nba';
+  const sportLabel = 'NBA';
+
+  if (sheet.getLastRow() === 0) {
+    const headers = ['Selected', 'Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Bet Type', 'Side', 'Line', 'Odds', 'Last Updated'];
+    sheet.appendRow(headers);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const sportIdx = data[0].indexOf('Sport');
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][sportIdx] === sportLabel) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?regions=us&markets=h2h,spreads&bookmakers=draftkings&apiKey=${apiKey}&oddsFormat=decimal`;
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    Logger.log(`API Error NBA: ${response.getContentText()}`);
+    SpreadsheetApp.getUi().alert(`Error fetching NBA odds: ${code}`);
+    return;
+  }
+
+  const dataObj = JSON.parse(response.getContentText());
+
+  dataObj.forEach(event => {
+    const gameId = event.id;
+    const date = new Date(event.commence_time).toLocaleString();
+    const homeTeam = event.home_team;
+    const awayTeam = event.away_team;
+
+    const bookmaker = event.bookmakers.find(bm => bm.key === 'draftkings');
+    if (!bookmaker) return;
+
+    const lastUpdated = new Date(bookmaker.last_update).toLocaleString();
+
+    bookmaker.markets.forEach(market => {
+      const betType = market.key.toUpperCase();
+
+      market.outcomes.forEach(outcome => {
+        const row = [
+          false,
+          gameId,
+          sportLabel,
+          date,
+          homeTeam,
+          awayTeam,
+          betType,
+          outcome.name,
+          outcome.point ?? '',
+          outcome.price,
+          lastUpdated
+        ];
+        sheet.appendRow(row);
+      });
+    });
+  });
+
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(`A2:A${lastRow}`).insertCheckboxes();
+}
+
+function fetchDraftKingsOdds(sportKey, sportLabel) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed')
+              || SpreadsheetApp.getActiveSpreadsheet().insertSheet('odds feed');
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  if (sheet.getLastRow() === 0) {
+    const headers = ['Selected', 'Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Bet Type', 'Side', 'Line', 'Odds', 'Last Updated'];
+    sheet.appendRow(headers);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const sportIdx = data[0].indexOf('Sport');
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][sportIdx] === sportLabel) sheet.deleteRow(i + 1);
+  }
+
+  const url = `https://api.the-odds-api.com/v4/sports/${sportKey}/odds/?regions=us&markets=h2h,spreads&bookmakers=draftkings&apiKey=${apiKey}&oddsFormat=decimal`;
+  const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    Logger.log(`API Error ${sportLabel}: ${response.getContentText()}`);
+    SpreadsheetApp.getUi().alert(`Error fetching ${sportLabel} odds: ${code}`);
+    return;
+  }
+
+  const dataObj = JSON.parse(response.getContentText());
+  dataObj.forEach(event => {
+    const gameId = event.id;
+    const date = new Date(event.commence_time).toLocaleString();
+    const homeTeam = event.home_team;
+    const awayTeam = event.away_team;
+    const bookmaker = event.bookmakers.find(bm => bm.key === 'draftkings');
+    if (!bookmaker) return;
+    const lastUpdated = new Date(bookmaker.last_update).toLocaleString();
+
+    bookmaker.markets.forEach(market => {
+      const betType = market.key.toUpperCase();
+      market.outcomes.forEach(outcome => {
+        const row = [
+          false,
+          gameId,
+          sportLabel,
+          date,
+          homeTeam,
+          awayTeam,
+          betType,
+          outcome.name,
+          outcome.point ?? '',
+          outcome.price,
+          lastUpdated
+        ];
+        sheet.appendRow(row);
+      });
+    });
+  });
+
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(`A2:A${lastRow}`).insertCheckboxes();
+}
+
+// ============================== SCORE FETCHING ==============================
+function fetchScores() {
+  const sheetName = 'Scores';
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+  sheet.clearContents();
+
+  const headers = ['Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Score', 'Winner', 'Status'];
+  sheet.appendRow(headers);
+
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  const sports = [
+    { key: 'icehockey_nhl', label: 'NHL' },
+    { key: 'basketball_nba', label: 'NBA' },
+    { key: 'baseball_mlb', label: 'MLB' },
+    { key: 'mma_mixed_martial_arts', label: 'UFC' },
+    { key: 'soccer_usa_mls', label: 'MLS' }
+  ];
+
+  sports.forEach(sport => {
+    const url = `https://api.the-odds-api.com/v4/sports/${sport.key}/scores/?daysFrom=2&apiKey=${apiKey}`;
+    const response = UrlFetchApp.fetch(url);
+    const games = JSON.parse(response.getContentText());
+
+    games.forEach(game => {
+      const gameId = game.id;
+      const date = new Date(game.commence_time).toLocaleDateString();
+      const home = game.home_team;
+      const away = game.away_team;
+
+      let homeScore = null;
+      let awayScore = null;
+      let scoreText = '';
+      let status = '';
+      let winner = '';
+
+      if (game.scores && Array.isArray(game.scores) && game.scores.length >= 2) {
+        homeScore = game.scores[0].score;
+        awayScore = game.scores[1].score;
+        scoreText = `${homeScore} - ${awayScore}`;
+      }
+
+      if (game.completed) {
+        status = 'Completed';
+        winner = game.scores && game.scores[0].score > game.scores[1].score ? home
+               : game.scores[1].score > game.scores[0].score ? away
+               : 'Tie';
+      } else if (homeScore != null && awayScore != null) {
+        status = 'In Progress';
+      } else {
+        status = 'Game Not Started';
+      }
+
+      sheet.appendRow([
+        gameId,
+        sport.label,
+        date,
+        home,
+        away,
+        scoreText,
+        winner,
+        status
+      ]);
+    });
+  });
+}
+
+
+
+// ============================== BET ID ==============================
+function generateBetID() {
+  return `BET-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
+}
+
+// ============================== GET ODDS (DROPDOWN) ==============================
+function getDropdownOdds() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed');
+  const data = sheet.getDataRange().getValues();
+  const header = data[0];
+
+  const rows = data.slice(1).map(r => ({
+    game_id: r[header.indexOf("Game ID")],
+    sport: r[header.indexOf("Sport")],
+    home_team: r[header.indexOf("Home Team")],
+    away_team: r[header.indexOf("Away Team")],
+    market: r[header.indexOf("Bet Type")],
+    label_1: r[header.indexOf("Side")],
+    label_2: r[header.indexOf("Side")] === r[header.indexOf("Home Team")] ? r[header.indexOf("Away Team")] : r[header.indexOf("Home Team")],
+    odd_1: r[header.indexOf("Odds")],
+    odd_2: r[header.indexOf("Odds")],
+    point_1: r[header.indexOf("Line")],
+    point_2: r[header.indexOf("Line")]
+  }));
+
+  return rows;
+}
+
+// ============================== PLACE BET V4 ==============================
+function submitV4Bet(betSlip, stake) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const user = Session.getActiveUser().getEmail();
+  const timestamp = new Date().toLocaleString();
+  const betsSheet = ss.getSheetByName('Bets') || ss.insertSheet('Bets');
+  const balancesSheet = ss.getSheetByName('balances');
+  const balData = balancesSheet.getDataRange().getValues();
+  const userRow = balData.findIndex(r => r[0] === user);
+  if (userRow === -1) throw new Error("User not found in balance sheet.");
+
+  const currentBalance = parseFloat(balData[userRow][1]);
+  if (stake > currentBalance) throw new Error("Insufficient balance.");
+
+  const combinedOdds = betSlip.reduce((acc, b) => acc * parseFloat(b.odds), 1);
+  const potentialWin = (stake * combinedOdds).toFixed(2);
+  const betType = betSlip.length === 1 ? 'Single' : 'Parlay';
+  const betID = generateBetID();
+
+  if (betsSheet.getLastRow() === 0) {
+    betsSheet.appendRow([
+      'Bet ID', 'User', 'Sport', 'Game ID', 'Type', 'Game', 'Market', 'Side', 'Line', 'Odds',
+      'Stake', 'Combined Odds', 'Potential Win', 'Timestamp', 'Leg Result', 'Parlay Hash', 'Bet Status'
+    ]);
+  }
+
+  const legsKey = betSlip.map(b => `${b.gameId}_${b.betType}_${b.side}_${b.line}`).sort().join('|');
+  const parlayHash = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, legsKey + stake)
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+
+  const allBets = betsSheet.getDataRange().getValues();
+  const userIdx = allBets[0].indexOf('User');
+  const statusIdx = allBets[0].indexOf('Bet Status');
+  const hashIdx = allBets[0].indexOf('Parlay Hash');
+
+  const duplicate = allBets.slice(1).some(r =>
+    r[userIdx] === user &&
+    (r[statusIdx] || '').toLowerCase() === 'pending' &&
+    r[hashIdx] === parlayHash
+  );
+
+  if (duplicate) throw new Error("❌ Duplicate pending parlay detected. Wait for result before re-betting.");
+
+  balancesSheet.getRange(userRow + 1, 2).setValue(currentBalance - stake);
+
+  betSlip.forEach((b, index) => {
+    betsSheet.appendRow([
+      betID,
+      user,
+      b.sport,
+      b.gameId,
+      betType,
+      `${b.home_team} vs ${b.away_team}`,
+      b.betType,
+      b.side,
+      b.line ?? '',
+      b.odds,
+      index === 0 ? stake.toFixed(2) : '',
+      index === 0 ? combinedOdds.toFixed(2) : '',
+      index === 0 ? potentialWin : '',
+      timestamp,
+      '',
+      index === 0 ? parlayHash : '',
+      'pending'
+    ]);
+  });
+
+  return `✅ Bet submitted! Bet ID: ${betID}`;
+}
+
+// ============================== SIDEBAR BET HANDLER ==============================
+function processSidebarBet(wager) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('odds feed');
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const user = Session.getActiveUser().getEmail();
+  const timestamp = new Date().toLocaleString();
+  const betsSheet = ss.getSheetByName('bets') || ss.insertSheet('bets');
+  const balancesSheet = ss.getSheetByName('balances') || ss.insertSheet('balances');
+
+  const selectedIdx = headers.indexOf('Selected');
+  const homeIdx = headers.indexOf('Home Team');
+  const awayIdx = headers.indexOf('Away Team');
+  const betTypeIdx = headers.indexOf('Bet Type');
+  const sideIdx = headers.indexOf('Side');
+  const oddsIdx = headers.indexOf('Odds');
+  const lineIdx = headers.indexOf('Line');
+
+  const selectedRows = data.slice(1).filter(row => row[selectedIdx] === true);
+  if (selectedRows.length === 0) return;
+
+  const combinedOdds = selectedRows.reduce((total, row) => total * parseFloat(row[oddsIdx]), 1);
+  const potentialWin = wager * combinedOdds;
+
+  const balances = balancesSheet.getDataRange().getValues();
+  const userIdx = balances.findIndex(row => row[0] === user);
+  if (userIdx === -1) throw new Error('User not found.');
+  const balance = parseFloat(balances[userIdx][1]);
+  if (balance < wager) throw new Error('Insufficient balance. Please Rebuy or win more.');
+
+  balancesSheet.getRange(userIdx + 1, 2).setValue(balance - wager);
+
+  if (betsSheet.getLastRow() === 0) {
+    betsSheet.appendRow(['User', 'Type', 'Bet Description', 'Odds', 'Wager', 'Potential Win', 'Timestamp']);
+  }
+
+  const betDesc = selectedRows.map(r =>
+    `${r[homeIdx]} vs ${r[awayIdx]} - ${r[betTypeIdx]} on ${r[sideIdx]}${r[lineIdx] !== '' ? ` (${r[lineIdx]})` : ''}`
+  ).join('; ');
+
+  betsSheet.appendRow([
+    user,
+    selectedRows.length === 1 ? 'Single' : 'Parlay',
+    betDesc,
+    combinedOdds.toFixed(2),
+    wager.toFixed(2),
+    potentialWin.toFixed(2),
+    timestamp
+  ]);
+}
+
+// ============================== SETTLE BETS ==============================
+function settlePendingBetsV4() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const betsSheet = ss.getSheetByName("Bets");
+  const scoresSheet = ss.getSheetByName("Scores");
+  const balancesSheet = ss.getSheetByName("balances");
+
+  const bets = betsSheet.getDataRange().getValues();
+  const scores = scoresSheet.getDataRange().getValues();
+  const balances = balancesSheet.getDataRange().getValues();
+
+  const betHeaders = bets[0];
+  const scoreHeaders = scores[0];
+  const balanceHeaders = balances[0];
+
+  const betIdIdx = betHeaders.indexOf("Bet ID");
+  const gameIdIdx = betHeaders.indexOf("Game ID");
+  const sideIdx = betHeaders.indexOf("Side");
+  const lineIdx = betHeaders.indexOf("Line");
+  const marketIdx = betHeaders.indexOf("Market");
+  const userIdx = betHeaders.indexOf("User");
+  const statusIdx = betHeaders.indexOf("Bet Status");
+  const potentialWinIdx = betHeaders.indexOf("Potential Win");
+  const timestampIdx = betHeaders.indexOf("Timestamp");
+  const homeTeamIdx = betHeaders.indexOf("Home Team");
+  const awayTeamIdx = betHeaders.indexOf("Away Team");
+  const typeIdx = betHeaders.indexOf("Type");
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 4); // 4 days ago
+
+  const scoreMap = {};
+  for (let i = 1; i < scores.length; i++) {
+    const row = scores[i];
+    const gid = row[scoreHeaders.indexOf("Game ID")];
+    const scoreText = row[scoreHeaders.indexOf("Score")];
+    const status = row[scoreHeaders.indexOf("Status")];
+    const winner = row[scoreHeaders.indexOf("Winner")];
+    scoreMap[gid] = { scoreText, status, winner };
+  }
+
+  const betGroups = {};
+  for (let i = 1; i < bets.length; i++) {
+    const row = bets[i];
+    const betStatus = row[statusIdx];
+    const timestampStr = row[timestampIdx];
+    if (!timestampStr || betStatus.toLowerCase() !== "pending") continue;
+    const betDate = new Date(timestampStr);
+    if (isNaN(betDate) || betDate < cutoff) continue;
+
+    const betId = row[betIdIdx];
+    if (!betGroups[betId]) betGroups[betId] = [];
+    betGroups[betId].push({ rowIdx: i, row });
+  }
+
+  Object.values(betGroups).forEach(group => {
+    let allResolved = true;
+    let allWon = true;
+
+    for (const leg of group) {
+      const row = leg.row;
+      const gameId = row[gameIdIdx];
+      const side = row[sideIdx];
+      const line = parseFloat(row[lineIdx] || 0);
+      const market = row[marketIdx];
+      const scoreData = scoreMap[gameId];
+
+      if (!scoreData || scoreData.status === "In Progress" || scoreData.status === "Game Not Started") {
+        allResolved = false;
+        continue;
+      }
+
+      const [homeScore, awayScore] = scoreData.scoreText.split(" - ").map(Number);
+      const winner = scoreData.winner;
+      let legWon = false;
+
+      if (market === "H2H") {
+        legWon = side === winner || (winner === "Tie" && side.toLowerCase() === "tie");
+      } else if (market === "SPREADS") {
+        const isHome = side === row[homeTeamIdx];
+        const pickedScore = isHome ? homeScore : awayScore;
+        const oppScore = isHome ? awayScore : homeScore;
+        legWon = pickedScore + line > oppScore;
+      } else if (market === "TOTALS") {
+        const total = homeScore + awayScore;
+        const isOver = side.toLowerCase().includes("over");
+        legWon = isOver ? total > line : total < line;
+      }
+
+      if (!legWon) allWon = false;
+    }
+
+    const finalStatus = !allResolved ? "pending" : allWon ? "Won" : "Lost";
+
+    group.forEach(leg => {
+      betsSheet.getRange(leg.rowIdx + 1, statusIdx + 1).setValue(finalStatus);
+    });
+
+    if (finalStatus === "Won") {
+      const user = group[0].row[userIdx];
+      const winAmount = parseFloat(group[0].row[potentialWinIdx]);
+      const balanceRow = balances.findIndex(r => r[0] === user);
+      if (balanceRow !== -1) {
+        const current = parseFloat(balances[balanceRow][1]);
+        balancesSheet.getRange(balanceRow + 1, 2).setValue(current + winAmount);
+      }
+    }
+  });
+}
+
+
+// ============================== UPDATE LEADERBOARD ==============================
+function updateLeaderboard() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const balancesSheet = ss.getSheetByName("balances");
+  const leaderboardSheet = ss.getSheetByName("Leaderboard") || ss.insertSheet("Leaderboard");
+
+  const data = balancesSheet.getDataRange().getValues();
+  const headers = ["Live Leaderboard", "Name", "Balance"];
+
+  const users = data.slice(1)
+    .map(row => ({
+      email: row[0],
+      balance: parseFloat(row[1]),
+      name: row[2] || row[0]
+    }))
+    .sort((a, b) => b.balance - a.balance);
+
+  const output = [headers];
+  const standings = [];
+
+  let rank = 1;
+  let previousBalance = null;
+
+  for (let i = 0; i < users.length; i++) {
+    const { name, balance } = users[i];
+    let standing;
+
+    if (balance === previousBalance) {
+      standing = `T${rank}`;
+    } else {
+      rank = i + 1;
+      standing = `${rank}`;
+    }
+
+    previousBalance = balance;
+    output.push([standing, name, balance.toFixed(2)]);
+    standings.push({ row: i + 2, standing, balance });
+  }
+
+  leaderboardSheet.clearContents();
+  leaderboardSheet.getRange(1, 1, output.length, output[0].length).setValues(output);
+
+  leaderboardSheet.getRange(2, 1, output.length - 1, output[0].length)
+    .setBorder(false, false, false, false, false, false);
+
+  let cutoffBalance = null;
+  let cutoffRow = null;
+
+  for (let i = 0; i < standings.length; i++) {
+    const rankText = standings[i].standing;
+    const numericRank = parseInt(rankText.replace("T", ""));
+    if (numericRank <= 5) {
+      cutoffBalance = standings[i].balance;
+      cutoffRow = standings[i].row;
+    } else if (standings[i].balance === cutoffBalance) {
+      cutoffRow = standings[i].row;
+    } else {
+      break;
+    }
+  }
+
+  if (cutoffRow) {
+    leaderboardSheet.getRange(cutoffRow, 1, 1, output[0].length)
+      .setBorder(false, false, true, false, false, false, "red", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
+  }
+}
+
+
+function settleAllPendingBets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const betsSheet = ss.getSheetByName("Bets");
+  const balancesSheet = ss.getSheetByName("balances");
+
+  const data = betsSheet.getDataRange().getValues();
+  const headers = data[0];
+  const statusIdx = headers.indexOf("Bet Status");
+  const descIdx = headers.indexOf("Bet Description");
+  const userIdx = headers.indexOf("User");
+  const winIdx = headers.indexOf("Potential Win");
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const status = row[statusIdx];
+
+    if (status && status.toLowerCase() !== "pending") continue;
+
+    const result = resolveParlay(row[descIdx]);
+    betsSheet.getRange(i + 1, statusIdx + 1).setValue(result);
+
+    if (result === "won") {
+      const user = row[userIdx];
+      const winnings = parseFloat(row[winIdx]);
+      creditBalance(user, winnings, balancesSheet);
+    }
+  }
+}
+
+function resolveParlay(rawJson) {
+  let legs;
+  try {
+    legs = JSON.parse(rawJson);
+  } catch (e) {
+    Logger.log("Invalid JSON bet format: " + rawJson);
+    return "lost";
+  }
+
+  for (let leg of legs) {
+    if (!evaluateLegV4(leg)) return "lost";
+  }
+  return "won";
+}
+
+function evaluateLegV4(leg) {
+  const { gameId, home, away, side, line, betType } = leg;
+
+  const mockScores = {
+    "game1": { home: 3, away: 2 },
+    "game2": { home: 1, away: 4 }
+  };
+
+  const result = mockScores[gameId];
+  if (!result) return false;
+
+  const isHome = side === home;
+  const pickedScore = isHome ? result.home : result.away;
+  const oppScore = isHome ? result.away : result.home;
+  const lineVal = parseFloat(line || 0);
+
+  if (betType === "H2H") return pickedScore > oppScore;
+  if (betType === "SPREADS") return pickedScore + lineVal > oppScore;
+  if (betType === "TOTALS") {
+    const total = result.home + result.away;
+    const isOver = side.toLowerCase().includes("over");
+    return isOver ? total > lineVal : total < lineVal;
+  }
+  return false;
+}
+
+function creditBalance(user, amount, sheet) {
+  const data = sheet.getDataRange().getValues();
+  const userRow = data.findIndex(row => row[0] === user);
+  if (userRow === -1) return;
+  const current = parseFloat(data[userRow][1]);
+  sheet.getRange(userRow + 1, 2).setValue(current + amount);
+}
+
+// ============================== IMPROVED F1 ODDS FUNCTION ==============================
+// Replace your existing fetchF1OddsFromSGO() function with this improved version
+// This connects to your new web scraper instead of costly APIs
+
+function fetchF1OddsFromWebScraper() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('odds feed')
+              || SpreadsheetApp.getActiveSpreadsheet().insertSheet('odds feed');
+
+  const sportLabel = 'F1';
+  
+  // Your deployed Replit web scraper URL
+  const webScraperUrl = 'https://workspace--aoblas.repl.co';
+  const apiEndpoint = `https://${webScraperUrl}/api/google-sheets/f1-odds`;
+
+  // Initialize headers if sheet is empty (same as your other sports)
+  if (sheet.getLastRow() === 0) {
+    const headers = ['Selected', 'Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Bet Type', 'Side', 'Line', 'Odds', 'Last Updated'];
+    sheet.appendRow(headers);
+  }
+
+  
+   
+  // Remove previous F1 rows (exactly like your other fetchDraftKings functions)
+  const data = sheet.getDataRange().getValues();
+  const sportIdx = data[0].indexOf('Sport');
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][sportIdx] === sportLabel) {
+      sheet.deleteRow(i + 1);
+    }
+  }
+
+  try {
+    // Fetch F1 odds from your web scraper
+    const response = UrlFetchApp.fetch(apiEndpoint, { muteHttpExceptions: true });
+    const code = response.getResponseCode();
+    
+    if (code !== 200) {
+      Logger.log(`API Error F1 Web Scraper: ${response.getContentText()}`);
+      SpreadsheetApp.getUi().alert(`Error fetching F1 odds from web scraper: ${code}`);
+      return;
+    }
+
+    const dataObj = JSON.parse(response.getContentText());
+    
+    if (!dataObj.success) {
+      Logger.log(`F1 Web Scraper Error: ${dataObj.error}`);
+      SpreadsheetApp.getUi().alert(`Error: ${dataObj.error}`);
+      return;
+    }
+
+    const f1Odds = dataObj.data;
+    
+    if (!f1Odds || f1Odds.length === 0) {
+      SpreadsheetApp.getUi().alert("No F1 odds available from web scraper");
+      return;
+    }
+
+    // Process each F1 odds entry (same format as your other sports)
+    f1Odds.forEach(odd => {
+      const row = [
+        false,                    // Selected checkbox
+        odd.gameId,              // Game ID
+        odd.sport,               // Sport (F1)
+        odd.dateTime,            // Date/Time formatted
+        odd.home_team,           // Race name (as "home team")
+        odd.away_team,           // Empty for F1
+        odd.betType,             // Bet Type (RACE_WINNER, etc.)
+        odd.side,                // Driver name
+        odd.line,                // Line (usually empty for race winner)
+        odd.odds,                // Decimal odds
+        odd.lastUpdated          // Last updated timestamp
+      ];
+      sheet.appendRow(row);
+    });
+
+    // Add checkboxes for selection (same as your other sports)
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      sheet.getRange(`A2:A${lastRow}`).insertCheckboxes();
+    }
+
+    Logger.log(`Successfully imported ${f1Odds.length} F1 odds from web scraper`);
+
+  } catch (error) {
+    Logger.log(`Error fetching F1 odds from web scraper: ${error.toString()}`);
+    SpreadsheetApp.getUi().alert(`Error connecting to F1 web scraper: ${error.toString()}`);
+  }
+}
+
+// FINAL URL TEST - Try webview and alternative formats
+function testAllPossibleURLs() {
+  const possibleUrls = [
+    // Standard formats
+    'workspace-aoblas.replit.app',
+    'workspace--aoblas.repl.co',
+    
+    // Webview formats (common in Replit)
+    'workspace-aoblas.replit.dev',
+    'aoblas-workspace.replit.app',
+    'aoblas.repl.co/workspace',
+    
+    // Alternative formats
+    'workspace.aoblas.replit.app',
+    'workspace.aoblas.repl.co'
+  ];
+  
+  for (let url of possibleUrls) {
+    try {
+      Logger.log(`Testing: https://${url}/test`);
+      const response = UrlFetchApp.fetch(`https://${url}/test`, { 
+        muteHttpExceptions: true,
+        timeout: 10
+      });
+      
+      if (response.getResponseCode() === 200) {
+        Logger.log(`✅ FOUND WORKING URL: ${url}`);
+        
+        // Test F1 API on working URL
+        const f1Response = UrlFetchApp.fetch(`https://${url}/api/google-sheets/f1-odds`, { 
+          muteHttpExceptions: true,
+          timeout: 10
+        });
+        
+        if (f1Response.getResponseCode() === 200) {
+          const data = JSON.parse(f1Response.getContentText());
+          SpreadsheetApp.getUi().alert(`🎉 PERFECT! Your F1 scraper is working!\n\nURL: ${url}\nF1 Records: ${data.count}\n\nUse this URL in your function!`);
+          return url;
+        }
+      }
+    } catch (e) {
+      Logger.log(`❌ ${url} failed: ${e.toString()}`);
+    }
+  }
+  
+  SpreadsheetApp.getUi().alert("❌ No working external URLs found. Your Replit may need deployment or different visibility settings.");
+  return null;
+}
+
+// ============================== FETCH FINAL SCORES (OPTIONAL) ==============================
+function fetchFinalScores() {
+  const sheetName = 'Final Scores';
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const oddsSheet = ss.getSheetByName('Odds Feed');
+  const finalSheet = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+
+  const apiKey = '06e5b9c919eac89cafa5f4bd4e8a3cea';
+  const sports = [
+    { key: 'icehockey_nhl', label: 'NHL' },
+    { key: 'basketball_nba', label: 'NBA' },
+    { key: 'baseball_mlb', label: 'MLB' }
+  ];
+
+  const oddsData = oddsSheet.getDataRange().getValues();
+  const oddsHeader = oddsData[0];
+  const gameIdIdx = oddsHeader.indexOf('Game ID');
+  const sportIdx = oddsHeader.indexOf('Sport');
+  const homeIdx = oddsHeader.indexOf('Home Team');
+  const awayIdx = oddsHeader.indexOf('Away Team');
+
+  const gameMap = {};
+  for (let i = 1; i < oddsData.length; i++) {
+    const row = oddsData[i];
+    const gid = row[gameIdIdx];
+    if (!gameMap[gid]) {
+      gameMap[gid] = {
+        sport: row[sportIdx],
+        home: row[homeIdx],
+        away: row[awayIdx]
+      };
+    }
+  }
+
+  const existing = finalSheet.getDataRange().getValues();
+  const existingIDs = new Set(existing.slice(1).map(row => row[0]));
+
+  if (existing.length === 0) {
+    finalSheet.appendRow(['Game ID', 'Sport', 'Date', 'Home Team', 'Away Team', 'Score', 'Winner', 'Status']);
+  }
+
+  sports.forEach(sport => {
+    const url = `https://api.the-odds-api.com/v4/sports/${sport.key}/scores/?daysFrom=3&apiKey=${apiKey}`;
+    const response = UrlFetchApp.fetch(url);
+    const data = JSON.parse(response.getContentText());
+
+    data.forEach(event => {
+      const gameId = event.id;
+      const game = gameMap[gameId] || gameMap[gameId.toUpperCase()] || gameMap[gameId.toLowerCase()];
+      if (!game) {
+        Logger.log(`⚠️ Skipping unknown Game ID: ${gameId}`);
+        return;
+      }
+
+      if (existingIDs.has(gameId)) {
+        Logger.log(`⏭ Already recorded Game ID: ${gameId}`);
+        return;
+      }
+
+      const dateStr = new Date(event.commence_time).toLocaleDateString();
+      const homeTeam = event.home_team;
+      const awayTeam = event.away_team;
+
+      let homeScore = null;
+      let awayScore = null;
+
+      if (event.scores && Array.isArray(event.scores)) {
+        homeScore = event.scores[0]?.score ?? null;
+        awayScore = event.scores[1]?.score ?? null;
+      }
+
+      Logger.log(`✅ Processing Game: ${homeTeam} vs ${awayTeam}`);
+      Logger.log(`  Completed: ${event.completed}`);
+      Logger.log(`  Scores: ${homeScore} - ${awayScore}`);
+
+      let scoreDisplay = '';
+      let winner = '';
+      let status = '';
+
+      if (event.completed) {
+        status = 'Final';
+        scoreDisplay = `${homeTeam} ${homeScore} - ${awayScore} ${awayTeam}`;
+        winner = homeScore > awayScore ? homeTeam : awayScore > homeScore ? awayTeam : 'Tie';
+      } else if (homeScore != null && awayScore != null) {
+        status = 'In Progress';
+        scoreDisplay = `${homeTeam} ${homeScore} - ${awayScore} ${awayTeam}`;
+        winner = '';
+      } else {
+        status = 'Game Not Started';
+        scoreDisplay = '';
+        winner = '';
+      }
+
+      finalSheet.appendRow([
+        gameId,
+        sport.label,
+        dateStr,
+        game.home,
+        game.away,
+        scoreDisplay,
+        winner,
+        status
+      ]);
+    });
+  });
+}

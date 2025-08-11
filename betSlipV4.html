@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 16px;
+    }
+    h3 {
+      margin-top: 0;
+      color: #333;
+    }
+    select, button, input {
+      width: 100%;
+      padding: 10px;
+      margin: 8px 0;
+      font-size: 14px;
+    }
+    .slip {
+      border: 1px solid #ccc;
+      padding: 10px;
+      margin-top: 12px;
+      background-color: #f9f9f9;
+    }
+    .slip-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+    }
+    .slip-item button {
+      padding: 4px 8px;
+      font-size: 12px;
+      background-color: #e74c3c;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h3>Bet Slip V4</h3>
+  <div><strong>Balance:</strong> <span id="userBalance">Loading...</span></div>
+  <div id="step-container">Loading odds...</div>
+
+  <div class="slip" id="betSlipDisplay"></div>
+  <div>
+  <strong>Total Odds:</strong> <span id="totalOdds">-</span><br>
+  <strong>Estimated Payout:</strong> <span id="payoutEstimate">-</span>
+</div>
+
+  <input type="number" id="stake" placeholder="Enter wager amount" oninput="updatePayoutEstimate()">
+  <button onclick="submitBet()">Submit Bet</button>
+
+  <script>
+  let allOdds = [];
+  let slip = [];
+  let selectedSport = '';
+  let selectedMarket = '';
+  let selectedGame = null;
+
+  google.script.run.withSuccessHandler(data => {
+    allOdds = data;
+    showSportStep();
+    loadUserBalance();
+  }).getStructuredOdds();
+
+  function loadUserBalance() {
+    google.script.run.withSuccessHandler(balance => {
+      document.getElementById("userBalance").textContent = `$${balance.toFixed(2)}`;
+    }).getUserBalanceV4();
+  }
+
+  function showSportStep() {
+    const sports = [...new Set(allOdds.map(o => o.sport))];
+    const html = `
+      <label>Select Sport</label>
+      <select id="sportSelect">
+        ${sports.map(s => `<option value="${s}">${s}</option>`).join('')}
+      </select>
+      <button onclick="captureSport()">Next</button>
+    `;
+    document.getElementById('step-container').innerHTML = html;
+  }
+
+  function captureSport() {
+    const el = document.getElementById('sportSelect');
+    if (!el || !el.value) return alert("Please select a sport.");
+    selectedSport = el.value;
+    showMarketStep();
+  }
+
+  function showMarketStep() {
+    const markets = [...new Set(allOdds.filter(o => o.sport === selectedSport).map(o => o.betType))];
+    const html = `
+      <label>Select Market</label>
+      <select id="marketSelect">
+        ${markets.map(m => `<option value="${m}">${m}</option>`).join('')}
+      </select>
+      <button onclick="captureMarket()">Next</button>
+      <button onclick="showSportStep()">Back</button>
+    `;
+    document.getElementById('step-container').innerHTML = html;
+  }
+
+  function captureMarket() {
+    const el = document.getElementById('marketSelect');
+    if (!el || !el.value) return alert("Please select a market.");
+    selectedMarket = el.value;
+    showMatchupSelect();
+  }
+
+  function showMatchupSelect() {
+    const filteredGames = allOdds.filter(o => o.sport === selectedSport && o.betType === selectedMarket);
+    const uniqueGames = Array.from(
+      new Map(filteredGames.map(o => [
+  o.gameId,
+  `${o.dateTime} - ${o.sport === 'F1' ? o.home_team : `${o.home_team} vs ${o.away_team}`}`
+])).entries()
+  );
+
+    if (uniqueGames.length === 0) {
+      alert("No matchups found for that market.");
+      return showMarketStep();
+    }
+
+    const html = `
+      <label>Select Matchup</label>
+      <select id="matchupSelect">
+        ${uniqueGames.map(([id, label]) => `<option value="${id}">${label}</option>`).join('')}
+      </select>
+      <button onclick="captureMatchup()">Next</button>
+      <button onclick="showMarketStep()">Back</button>
+    `;
+    document.getElementById('step-container').innerHTML = html;
+  }
+
+  function captureMatchup() {
+    const selectedId = document.getElementById('matchupSelect').value;
+    if (!selectedId) return alert("Please select a matchup.");
+
+    const matchupOptions = allOdds.filter(o => o.gameId === selectedId && o.betType === selectedMarket);
+    if (matchupOptions.length === 0) {
+      alert("No valid betting options found for this game.");
+      return showMatchupSelect();
+    }
+
+    selectedGame = matchupOptions[0];
+    showSidesForMatchup(matchupOptions);
+  }
+
+  function showSidesForMatchup(options) {
+    const html = options.map((o, i) => `
+      <button onclick="addToSlip(${allOdds.indexOf(o)})">
+        ${o.side} ${o.line ? `(${o.line})` : ''} @ ${o.odds}
+      </button>
+    `).join('<br>') + `
+      <br><button onclick="showMatchupSelect()">Back</button>
+    `;
+    document.getElementById('step-container').innerHTML = html;
+  }
+
+  function addToSlip(index) {
+    const leg = allOdds[index];
+    slip.push(leg);
+    renderSlip();
+  }
+
+  function calculateTotalOdds() {
+    return slip.reduce((total, leg) => total * parseFloat(leg.odds), 1);
+  }
+
+  function updatePayoutEstimate() {
+    const stake = parseFloat(document.getElementById('stake').value);
+    const totalOdds = calculateTotalOdds();
+
+    document.getElementById('totalOdds').textContent = slip.length ? totalOdds.toFixed(2) : '-';
+
+    if (!stake || stake <= 0 || slip.length === 0) {
+      document.getElementById('payoutEstimate').textContent = '-';
+    } else {
+      const payout = stake * totalOdds;
+      document.getElementById('payoutEstimate').textContent = `$${payout.toFixed(2)}`;
+    }
+  }
+
+  function renderSlip() {
+    const div = document.getElementById('betSlipDisplay');
+    if (slip.length === 0) {
+      div.innerHTML = '<em>Slip is empty.</em>';
+      document.getElementById('totalOdds').textContent = '-';
+      document.getElementById('payoutEstimate').textContent = '-';
+      return;
+    }
+
+    div.innerHTML = slip.map((b, i) => `
+      <div class="slip-item">
+        <span>
+  ${b.dateTime} - 
+  ${b.sport === 'F1' ? b.home_team : `${b.home_team} vs ${b.away_team}`} - 
+  ${b.betType} on ${b.side} ${b.line ? `(${b.line})` : ''} @ ${b.odds}
+</span>
+    <button onclick="removeFromSlip(${i})">❌</button>
+      </div>
+    `).join('');
+
+    updatePayoutEstimate();
+  }
+
+  function removeFromSlip(i) {
+    slip.splice(i, 1);
+    renderSlip();
+  }
+
+  function submitBet() {
+    const stake = parseFloat(document.getElementById('stake').value);
+    if (!stake || stake <= 0) return alert("Please enter a valid wager amount.");
+    if (slip.length === 0) return alert("You must add at least one leg to your bet.");
+
+    google.script.run.withSuccessHandler(msg => {
+      alert(msg);
+      slip = [];
+      renderSlip();
+      document.getElementById('stake').value = '';
+      showSportStep();
+      loadUserBalance();
+    }).submitV4Bet(slip, stake);
+  }
+  </script>
+</body>
+</html>
