@@ -1,6 +1,14 @@
 # Google Apps Script Betting Sandbox
 
-A Google Sheets betting sandbox with live odds from DraftKings (NHL, NBA, MLB, UFC, MLS), F1 via web scraper, and USA horse racing. Users build single/parlay slips in a sidebar UI, track balances, and auto-settle bets from recent scores. Features a live leaderboard ranking system.
+A Google Sheets betting sandbox for simulated sports betting, featuring live odds from DraftKings (NHL, NBA, MLB, UFC, MLS), F1 via web scraper, and USA horse racing. Users can build single or parlay slips in a sidebar UI, track balances, and auto-settle bets from recent scores. Includes a live leaderboard ranking system.
+
+## Reference Google Sheet
+
+To get started quickly, use this reference Google Sheet (view-only):  
+https://docs.google.com/spreadsheets/d/1gKUuET6Ujky-uFDxN0W9indhitnqNFDavIZKE9nKucU/edit?gid=836368327#gid=836368327
+
+**It is strongly recommended that you make your own copy of the sheet for development and testing.**  
+Go to `File > Make a copy` in Google Sheets to create your own editable version.
 
 ## Features
 
@@ -14,10 +22,12 @@ A Google Sheets betting sandbox with live odds from DraftKings (NHL, NBA, MLB, U
 
 ## Getting Started
 
-1. Copy the code from `code.gs.txt` into your Google Apps Script project
-2. Upload `betSlipV4.html` to your Apps Script project
-3. Set up the required Google Sheets with the necessary columns
-4. Use the custom "Betting Actions" menu to:
+1. Open your Google Sheet and go to **Extensions > Apps Script** (see image above) to access the code editor.  
+   > No need to manually copy code—your codebase will be available there.
+
+2. Make a copy of the [reference Google Sheet](https://docs.google.com/spreadsheets/d/1gKUuET6Ujky-uFDxN0W9indhitnqNFDavIZKE9nKucU/edit?gid=836368327#gid=836368327) to use as your working sheet.
+
+3. Use the custom **"Betting Actions"** menu in your Google Sheet to:
    - Refresh odds for different sports
    - Open the bet slip sidebar
    - Fetch scores and settle bets
@@ -30,4 +40,4 @@ A Google Sheets betting sandbox with live odds from DraftKings (NHL, NBA, MLB, U
 
 ## Use Cases
 
-Perfect for running private simulated betting leagues, quickly loading markets, placing parlays, and managing live leaderboards - all within Google Sheets without external databases.
+Ideal for running private simulated betting leagues, quickly loading markets, placing parlays, and managing live leaderboards—all within Google Sheets, with no external database required.
