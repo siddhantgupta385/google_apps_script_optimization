@@ -30,4 +30,4 @@ A Google Sheets betting sandbox with live odds from DraftKings (NHL, NBA, MLB, U
 
 ## Use Cases
 
-Perfect for running private simulated betting leagues, quickly loading markets, placing parlays, and managing live leaderboards - all within Google Sheets without external databases. 
+Perfect for running private simulated betting leagues, quickly loading markets, placing parlays, and managing live leaderboards - all within Google Sheets without external databases.
