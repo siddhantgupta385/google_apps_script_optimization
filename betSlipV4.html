@@ -6,6 +6,7 @@
     body {
       font-family: Arial, sans-serif;
       padding: 16px;
+      max-width: 100%;
     }
     h3 {
       margin-top: 0;
@@ -16,18 +17,34 @@
       padding: 10px;
       margin: 8px 0;
       font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #ddd;
+    }
+    button {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #45a049;
     }
     .slip {
       border: 1px solid #ccc;
       padding: 10px;
       margin-top: 12px;
       background-color: #f9f9f9;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
     .slip-item {
       display: flex;
       justify-content: space-between;
       align-items: center;
       margin-bottom: 6px;
+      padding: 6px;
+      border-bottom: 1px solid #eee;
     }
     .slip-item button {
       padding: 4px 8px;
@@ -37,22 +54,71 @@
       border: none;
       border-radius: 4px;
       cursor: pointer;
+      width: auto;
+    }
+    .sport-icon {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      margin-right: 5px;
+      vertical-align: middle;
+      text-align: center;
+      font-weight: bold;
+      border-radius: 50%;
+      color: white;
+      line-height: 20px;
+      font-size: 12px;
+    }
+    .sport-NBA { background-color: #C9082A; }
+    .sport-MLB { background-color: #041E42; }
+    .sport-NHL { background-color: #00205B; }
+    .sport-UFC { background-color: #D20A0A; }
+    .sport-F1 { background-color: #E10600; }
+    .sport-MLS { background-color: #1B458F; }
+    .sport-HORSE { background-color: #654321; }
+    
+    .balance-container {
+      display: flex;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .odds-summary {
+      display: flex;
+      justify-content: space-between;
+      margin: 10px 0;
+    }
+    
+    /* Responsive design improvements */
+    @media (max-width: 480px) {
+      body { padding: 10px; }
+      .odds-summary { flex-direction: column; }
     }
   </style>
 </head>
 <body>
   <h3>Bet Slip V4</h3>
-  <div><strong>Balance:</strong> <span id="userBalance">Loading...</span></div>
+  <div class="balance-container">
+    <strong>Balance:</strong> <span id="userBalance">Loading...</span>
+    <button id="refreshButton" onclick="loadUserBalance()" style="width: auto; padding: 5px; margin-left: 5px;">↻</button>
+  </div>
   <div id="step-container">Loading odds...</div>
 
   <div class="slip" id="betSlipDisplay"></div>
-  <div>
-  <strong>Total Odds:</strong> <span id="totalOdds">-</span><br>
-  <strong>Estimated Payout:</strong> <span id="payoutEstimate">-</span>
-</div>
+  <div class="odds-summary">
+    <div><strong>Total Odds:</strong> <span id="totalOdds">-</span></div>
+    <div><strong>Estimated Payout:</strong> <span id="payoutEstimate">-</span></div>
+  </div>
 
   <input type="number" id="stake" placeholder="Enter wager amount" oninput="updatePayoutEstimate()">
   <button onclick="submitBet()">Submit Bet</button>
+  
+  <!-- Debug Console -->
+  <div id="debug-console" style="margin-top: 20px; padding: 10px; border-top: 1px solid #ccc;">
+    <h4>Debug Console</h4>
+    <div id="debug-output" style="font-family: monospace; background: #f5f5f5; padding: 5px; max-height: 200px; overflow-y: auto; font-size: 12px;"></div>
+    <button onclick="debugGetOdds()">Test Get Odds</button>
+    <button onclick="debugUseHardcodedOdds()">Use Hardcoded Odds</button>
+  </div>
 
   <script>
   let allOdds = [];
@@ -60,17 +126,186 @@
   let selectedSport = '';
   let selectedMarket = '';
   let selectedGame = null;
+  let isLoading = true;
 
-  google.script.run.withSuccessHandler(data => {
-    allOdds = data;
-    showSportStep();
-    loadUserBalance();
-  }).getStructuredOdds();
+  // Initialize data loading
+  function initializeApp() {
+    document.getElementById('step-container').innerHTML = `
+      <div style="text-align:center;">
+        <p>Loading odds...</p>
+        <p>This may take a moment</p>
+        <div class="loading-spinner" style="margin:15px auto; width:30px; height:30px; border:3px solid #f3f3f3; border-top:3px solid #4CAF50; border-radius:50%; animation:spin 1s linear infinite;"></div>
+      </div>
+      <style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); }}</style>
+    `;
+    
+    console.log("Initializing app, requesting odds data...");
+    
+    google.script.run
+      .withSuccessHandler(data => {
+        console.log("getStructuredOdds response received:", data ? data.length : 0, "items");
+        
+        if (!data || data.length === 0) {
+          // Automatically use hardcoded data if no sheet data is available
+          console.log("No sheet data available, using hardcoded data instead");
+          document.getElementById('step-container').innerHTML = `
+            <div style="text-align:center;">
+              <p>No odds data available from spreadsheet</p>
+              <p>Using test data instead...</p>
+            </div>
+          `;
+          setTimeout(useHardcodedData, 500); // Small delay for user to see the message
+          return;
+        }
+        
+        console.log("Data received:", data.length, "items");
+        allOdds = data;
+        isLoading = false;
+        showSportStep();
+        loadUserBalance();
+      })
+      .withFailureHandler(error => {
+        console.error("Error loading odds:", error);
+        document.getElementById('step-container').innerHTML = `
+          <div style="text-align:center;">
+            <p>Error loading odds: ${error.message || 'Unknown error'}</p>
+            <button class="primary-button" onclick="useHardcodedData()">Use Test Data</button>
+            <button onclick="initializeApp()">Retry Loading</button>
+            <button onclick="showDebugInfo()">Show Debug Info</button>
+          </div>
+        `;
+      })
+      .getStructuredOdds();
+  }
+  
+  // Initialize on page load
+  initializeApp();
+  
+  function loadTestData() {
+    document.getElementById('step-container').innerHTML = '<div style="text-align:center;"><p>Loading sample data...</p><p>Please wait</p></div>';
+    
+    google.script.run
+      .withSuccessHandler(message => {
+        // Once data is loaded, reload the app
+        console.log(message);
+        initializeApp();
+      })
+      .withFailureHandler(error => {
+        document.getElementById('step-container').innerHTML = `
+          <div style="text-align:center;">
+            <p>Error loading sample data: ${error.message || 'Unknown error'}</p>
+            <button onclick="useHardcodedData()">Use Test Data</button>
+            <button onclick="initializeApp()">Retry Loading</button>
+          </div>
+        `;
+      })
+      .loadSampleOddsData();
+  }
+  
+  function useHardcodedData() {
+    document.getElementById('step-container').innerHTML = `
+      <div style="text-align:center;">
+        <p>Loading hardcoded test data...</p>
+        <p style="font-size:12px; color:#666;">This bypasses spreadsheet data requirements</p>
+      </div>
+    `;
+    
+    // First verify that test data is working
+    google.script.run
+      .withSuccessHandler(status => {
+        if (status && status.success) {
+          console.log("Test data verification successful:", status.message);
+          // Now actually get the data
+          fetchHardcodedTestData();
+        } else {
+          document.getElementById('step-container').innerHTML = `
+            <div style="text-align:center;">
+              <p>Error: Hardcoded test data not available</p>
+              <p style="color:red">${status ? status.message : 'Unknown error'}</p>
+              <div style="margin-top:15px">
+                <button onclick="loadTestData()">Try Loading Sample Data</button>
+                <button onclick="initializeApp()">Retry Loading</button>
+                <button onclick="showDebugInfo()">Show Debug Info</button>
+              </div>
+            </div>
+          `;
+        }
+      })
+      .withFailureHandler(error => {
+        document.getElementById('step-container').innerHTML = `
+          <div style="text-align:center;">
+            <p>Error verifying test data: ${error.message || 'Unknown error'}</p>
+            <button onclick="initializeApp()">Retry Loading</button>
+          </div>
+        `;
+      })
+      .verifyHardcodedTestData();
+  }
+  
+  function fetchHardcodedTestData() {
+    google.script.run
+      .withSuccessHandler(data => {
+        if (!data || data.length === 0) {
+          document.getElementById('step-container').innerHTML = `
+            <div style="text-align:center;">
+              <p>Error: Hardcoded data is empty!</p>
+              <button onclick="initializeApp()">Retry Loading</button>
+              <button onclick="showDebugInfo()">Show Debug Info</button>
+            </div>
+          `;
+          return;
+        }
+        
+        console.log("Test data received:", data.length, "items");
+        allOdds = data;
+        isLoading = false;
+        showSportStep();
+        loadUserBalance();
+      })
+      .withFailureHandler(error => {
+        document.getElementById('step-container').innerHTML = `
+          <div style="text-align:center;">
+            <p>Error getting test data: ${error.message || 'Unknown error'}</p>
+            <button onclick="initializeApp()">Retry Loading</button>
+          </div>
+        `;
+      })
+      .getHardcodedTestOdds();
+  }
+  
+  function showDebugInfo() {
+    document.getElementById('step-container').innerHTML = `
+      <div style="text-align:center; padding:10px; background:#f5f5f5; border:1px solid #ddd; border-radius:5px;">
+        <h4>Debug Information</h4>
+        <p>If you're seeing errors with odds data:</p>
+        <ol style="text-align:left; display:inline-block;">
+          <li>Check if 'odds feed' sheet exists</li>
+          <li>Make sure sample data is loaded</li>
+          <li>Verify that getHardcodedTestOdds() is working</li>
+          <li>Check Apps Script execution logs</li>
+        </ol>
+        <div style="margin-top:15px">
+          <button onclick="google.script.run.debugOddsData()">Run Odds Data Debug</button>
+          <button onclick="loadTestData()">Load Sample Data</button>
+          <button onclick="initializeApp()">Try Again</button>
+        </div>
+      </div>
+    `;
+  }
 
   function loadUserBalance() {
-    google.script.run.withSuccessHandler(balance => {
-      document.getElementById("userBalance").textContent = `$${balance.toFixed(2)}`;
-    }).getUserBalanceV4();
+    const balanceElement = document.getElementById("userBalance");
+    balanceElement.textContent = "Loading...";
+    
+    google.script.run
+      .withSuccessHandler(balance => {
+        balanceElement.textContent = `$${balance.toFixed(2)}`;
+      })
+      .withFailureHandler(error => {
+        balanceElement.textContent = "Error loading balance";
+        console.error("Balance error:", error);
+      })
+      .getUserBalanceV4();
   }
 
   function showSportStep() {
@@ -112,14 +347,26 @@
     showMatchupSelect();
   }
 
+  function formatMatchupDisplay(sport, dateTime, home_team, away_team) {
+    const formattedDate = formatDateTime(dateTime);
+    
+    if (sport === 'F1') {
+      return `${formattedDate} - ${home_team} Grand Prix`;
+    } else if (sport === 'Horse Racing') {
+      return `${formattedDate} - ${home_team}`;
+    } else {
+      return `${formattedDate} - ${home_team} vs ${away_team}`;
+    }
+  }
+
   function showMatchupSelect() {
     const filteredGames = allOdds.filter(o => o.sport === selectedSport && o.betType === selectedMarket);
     const uniqueGames = Array.from(
       new Map(filteredGames.map(o => [
-  o.gameId,
-  `${o.dateTime} - ${o.sport === 'F1' ? o.home_team : `${o.home_team} vs ${o.away_team}`}`
-])).entries()
-  );
+        o.gameId,
+        formatMatchupDisplay(o.sport, o.dateTime, o.home_team, o.away_team)
+      ])).entries()
+    );
 
     if (uniqueGames.length === 0) {
       alert("No matchups found for that market.");
@@ -186,6 +433,28 @@
     }
   }
 
+  function getSportIcon(sport) {
+    const sportAbbr = {
+      'NBA': 'NBA',
+      'MLB': 'MLB',
+      'NHL': 'NHL',
+      'UFC': 'UFC',
+      'F1': 'F1',
+      'MLS': 'MLS',
+      'Horse Racing': 'HR'
+    };
+    return `<div class="sport-icon sport-${sport}">${sportAbbr[sport] || sport.charAt(0)}</div>`;
+  }
+  
+  function formatDateTime(dateTime) {
+    try {
+      const date = new Date(dateTime);
+      return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    } catch(e) {
+      return dateTime;
+    }
+  }
+  
   function renderSlip() {
     const div = document.getElementById('betSlipDisplay');
     if (slip.length === 0) {
@@ -198,11 +467,14 @@
     div.innerHTML = slip.map((b, i) => `
       <div class="slip-item">
         <span>
-  ${b.dateTime} - 
-  ${b.sport === 'F1' ? b.home_team : `${b.home_team} vs ${b.away_team}`} - 
-  ${b.betType} on ${b.side} ${b.line ? `(${b.line})` : ''} @ ${b.odds}
-</span>
-    <button onclick="removeFromSlip(${i})">❌</button>
+          ${getSportIcon(b.sport)}
+          <strong>${formatDateTime(b.dateTime)}</strong><br>
+          ${b.sport === 'F1' || b.sport === 'Horse Racing' 
+            ? b.home_team 
+            : `${b.home_team} vs ${b.away_team}`}<br>
+          <em>${b.betType} on ${b.side} ${b.line ? `(${b.line})` : ''} @ ${b.odds}</em>
+        </span>
+        <button onclick="removeFromSlip(${i})">❌</button>
       </div>
     `).join('');
 
@@ -218,15 +490,103 @@
     const stake = parseFloat(document.getElementById('stake').value);
     if (!stake || stake <= 0) return alert("Please enter a valid wager amount.");
     if (slip.length === 0) return alert("You must add at least one leg to your bet.");
-
-    google.script.run.withSuccessHandler(msg => {
-      alert(msg);
-      slip = [];
-      renderSlip();
-      document.getElementById('stake').value = '';
-      showSportStep();
-      loadUserBalance();
-    }).submitV4Bet(slip, stake);
+    
+    // Validate minimum stake
+    if (stake < 1) return alert("Minimum wager amount is $1.");
+    
+    // Get current balance to validate
+    google.script.run.withSuccessHandler(balance => {
+      if (stake > balance) {
+        alert("Insufficient funds. Your current balance is $" + balance.toFixed(2));
+        return;
+      }
+      
+      // Disable button to prevent double submission
+      const submitButton = document.querySelector('button[onclick="submitBet()"]');
+      submitButton.disabled = true;
+      submitButton.textContent = "Processing...";
+      
+      google.script.run
+        .withSuccessHandler(msg => {
+          alert(msg);
+          slip = [];
+          renderSlip();
+          document.getElementById('stake').value = '';
+          showSportStep();
+          loadUserBalance();
+          
+          // Re-enable button
+          submitButton.disabled = false;
+          submitButton.textContent = "Submit Bet";
+        })
+        .withFailureHandler(error => {
+          alert("Error: " + error.message);
+          // Re-enable button
+          submitButton.disabled = false;
+          submitButton.textContent = "Submit Bet";
+        })
+        .submitV4Bet(slip, stake);
+    }).getUserBalanceV4();
+  }
+  
+  // Debug functions
+  function logDebug(message, data) {
+    const debugOutput = document.getElementById('debug-output');
+    const timestamp = new Date().toLocaleTimeString();
+    
+    let logMessage = `[${timestamp}] ${message}`;
+    if (data !== undefined) {
+      if (typeof data === 'object') {
+        logMessage += ': ' + JSON.stringify(data);
+      } else {
+        logMessage += ': ' + data;
+      }
+    }
+    
+    const logEntry = document.createElement('div');
+    logEntry.textContent = logMessage;
+    debugOutput.appendChild(logEntry);
+    debugOutput.scrollTop = debugOutput.scrollHeight;
+  }
+  
+  function debugGetOdds() {
+    logDebug('Testing getStructuredOdds()...');
+    
+    google.script.run
+      .withSuccessHandler(data => {
+        logDebug('Received data from getStructuredOdds', { 
+          length: data ? data.length : 0,
+          sample: data && data.length > 0 ? data.slice(0, 2) : 'No data'
+        });
+      })
+      .withFailureHandler(error => {
+        logDebug('Error from getStructuredOdds', error);
+      })
+      .getStructuredOdds();
+  }
+  
+  function debugUseHardcodedOdds() {
+    logDebug('Fetching hardcoded test odds...');
+    
+    google.script.run
+      .withSuccessHandler(data => {
+        logDebug('Received hardcoded test data', { 
+          length: data ? data.length : 0 
+        });
+        
+        if (data && data.length > 0) {
+          allOdds = data;
+          isLoading = false;
+          showSportStep();
+          logDebug('Successfully loaded hardcoded test data');
+        } else {
+          logDebug('Failed to load hardcoded test data');
+        }
+      })
+      .withFailureHandler(error => {
+        logDebug('Error fetching hardcoded test data', error);
+      })
+      .getHardcodedTestOdds();
   }
   </script>
 </body>
